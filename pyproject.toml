@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "travel-agents"
+version = "0.1.0"
+description = "Multi-agent travel planner: a LangGraph supervisor routing to tool-calling specialist agents."
+requires-python = ">=3.11"
+dependencies = [
+  "langgraph>=1.2",
+  "langchain-core>=1.7",
+  "langchain-groq>=1.1",
+  "httpx>=0.28",
+  "pydantic>=2.10",
+  "pydantic-settings>=2.6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "respx>=0.22"]
+
+[project.scripts]
+travel-agents = "travel_agents.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

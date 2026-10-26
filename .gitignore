@@ -1,0 +1,19 @@
+# Secrets — never commit real keys. Copy .env.example to .env instead.
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+dist/
+build/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
