@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     groq_model: str = "llama-3.3-70b-versatile"
     tavily_api_key: str = ""
     aviationstack_api_key: str = ""
+    database_url: str = ""  # empty -> in-memory checkpoints (lost on exit)
     http_timeout_s: float = 15.0
 
 
