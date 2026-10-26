@@ -3,7 +3,7 @@ from langchain_core.runnables import RunnableLambda
 
 from travel_agents.agents import SPECIALISTS, build_specialist
 from travel_agents.graph import Route, build_graph, plan_request
-from tests.conftest import ScriptedChatModel
+from tests.conftest import ScriptedChatModel, scripted_planner
 
 
 def scripted_router(*decisions: str) -> RunnableLambda:
@@ -43,20 +43,39 @@ def test_supervisor_routes_specialists_then_plans():
         responses=[
             AIMessage(content="Flights: KE703 ICN-NRT."),   # flights specialist (no tool call)
             AIMessage(content="Hotels: 3 options."),         # lodging specialist
-            AIMessage(content="FINAL PLAN"),                 # planner
         ]
     )
-    graph = build_graph(model, router=scripted_router("flights", "lodging", "finish"))
+    graph = build_graph(model, router=scripted_router("flights", "lodging", "finish"), planner=scripted_planner("FINAL"))
     out = graph.invoke(plan_request("3 days in Tokyo from Seoul"))
 
     names = [m.name for m in out["messages"] if isinstance(m, AIMessage) and m.name]
-    assert names == ["flights", "lodging"]
-    assert out["messages"][-1].content == "FINAL PLAN"
+    assert names == ["flights", "lodging", "planner"]
+    assert out["plan"]["destination"] == "FINAL"
+    assert out["messages"][-1].content.startswith("# FINAL: 2026-11-05 to 2026-11-06")
 
 
 def test_supervisor_step_cap_forces_finish():
-    model = ScriptedChatModel(responses=[AIMessage(content="report"), AIMessage(content="FINAL PLAN")])
-    graph = build_graph(model, router=scripted_router("flights", "flights", "flights"), max_steps=1)
+    model = ScriptedChatModel(responses=[AIMessage(content="report")])
+    graph = build_graph(
+        model, router=scripted_router("flights", "flights", "flights"), planner=scripted_planner("FINAL"), max_steps=1
+    )
     out = graph.invoke(plan_request("x"))
     assert out["steps"] == 1
-    assert out["messages"][-1].content == "FINAL PLAN"
+    assert out["plan"]["destination"] == "FINAL"
+
+
+def test_specialist_tool_urls_are_recorded_as_evidence(monkeypatch):
+    monkeypatch.setattr(
+        "travel_agents.tools.search.post_json",
+        lambda url, json, headers: {"results": [{"title": "Hotel A", "url": "https://hotels.example/a", "content": "x"}]},
+    )
+    model = ScriptedChatModel(
+        responses=[
+            AIMessage(content="", tool_calls=[{"name": "web_search", "args": {"query": "hotels"}, "id": "c1"}]),
+            AIMessage(content="Hotel A looks good (https://made-up.example)."),
+        ]
+    )
+    graph = build_graph(model, router=scripted_router("lodging", "finish"), planner=scripted_planner("T"))
+    out = graph.invoke(plan_request("x"))
+    # Only what the tool returned counts; a URL the model wrote in its report does not.
+    assert out["evidence"] == ["https://hotels.example/a"]

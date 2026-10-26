@@ -17,3 +17,6 @@ build/
 .DS_Store
 .idea/
 .vscode/
+
+# Eval run output (commit a chosen baseline by hand if you want one in the repo)
+evals/results/

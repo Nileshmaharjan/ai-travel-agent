@@ -34,6 +34,9 @@ across restarts.
   revisions are capped.
 - **Memory:** a Postgres checkpointer stores every step under a `thread_id`, so a paused plan survives restarts
   and can be picked up later with `--thread`. Without `DATABASE_URL` it falls back to in-memory checkpoints.
+- **Typed plan:** the planner returns a `TripPlan` (structured output): one entry per day, an estimated total in
+  the budget currency, an `over_budget` flag, sources and declared gaps. The graph also records every URL the
+  tools actually returned (`evidence`), which is what grounding is checked against.
 - **Tools:** typed Pydantic input schemas; failures come back to the model as data (`{"error": …}`) so it
   can recover or report the gap instead of inventing facts.
 
@@ -69,11 +72,31 @@ The tests run offline. Set `TEST_DATABASE_URL=postgresql://travel:travel@localho
 the Postgres test, which pauses a plan, reconnects and resumes it. The HTTP tools are tested against mocked APIs (`respx`), and the graphs are driven by a
 scripted chat model, so routing, the tool-call loop and the step caps are checked deterministically.
 
+## Evaluation
+
+`evals/cases.jsonl` holds 30 trip requests across Asia-Pacific, Europe and the US, in 11 currencies. It includes
+deliberately impossible budgets, where the correct answer is to report that the plan is over budget. Each plan is
+scored by deterministic checks, with no LLM judge:
+
+| Scorer | Passes when |
+|---|---|
+| `dates_valid` | the plan covers exactly the requested dates, one entry per day, in order |
+| `budget_respected` | the total is in the budget currency and within budget, the `over_budget` flag matches the numbers, and impossible budgets are flagged rather than claimed to fit |
+| `grounded_sources` | every cited URL was returned by a tool during the run (none invented), and a non-empty plan cites at least one |
+
+```bash
+travel-agents-eval --limit 5            # live run; writes evals/results/<timestamp>.{json,md}
+```
+
+CI (`.github/workflows/ci.yml`) runs the offline tests and the Postgres test on every push. `evals.yml` runs the
+live eval weekly or on demand, using API keys stored as repository secrets, and posts the score table to the job
+summary.
+
 ## Roadmap
 
 - [x] **M1:** tool-calling specialists, supervisor routing, offline tests
 - [x] **M2:** Postgres checkpointer for conversation memory, human review (`interrupt`) before a plan is final
-- [ ] **M3:** evaluation suite: ~30 trip requests scored for budget compliance, date validity and grounding
-      (every fact traceable to a tool result), run in CI
+- [x] **M3:** evaluation suite: 30 trip requests scored for date validity, budget compliance and grounding;
+      tests in CI on every push, live evals on a schedule
 - [ ] **M4:** FastAPI service, Docker image, GitHub Actions, LLM tracing (LangSmith or Langfuse)
 # ai-travel-agent

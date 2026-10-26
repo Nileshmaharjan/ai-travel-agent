@@ -1,10 +1,12 @@
 """Supervisor graph: a router picks the next specialist until the plan is ready, a planner writes it up,
 and the traveller approves it or asks for changes (human-in-the-loop via `interrupt`)."""
 
-from typing import Literal
+import operator
+import re
+from typing import Annotated, Literal
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import Runnable
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, MessagesState, StateGraph
@@ -13,8 +15,10 @@ from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field
 
 from travel_agents.agents import SPECIALISTS, build_specialist
+from travel_agents.plan import TripPlan
 
 AgentName = Literal["flights", "lodging", "itinerary", "finish"]
+URL_RE = re.compile(r"https?://[^\s\"'<>)\]]+")
 
 
 class Route(BaseModel):
@@ -36,6 +40,9 @@ class TravelState(MessagesState):
     steps: int
     revisions: int
     approved: bool
+    plan: dict | None
+    # URLs that tools actually returned. The grounding eval checks the plan's sources against this.
+    evidence: Annotated[list[str], operator.add]
 
 
 SUPERVISOR_PROMPT = """You coordinate a team of travel specialists:
@@ -46,21 +53,27 @@ Call each specialist only when the request needs it and it has not already repor
 Choose "finish" once every part of the request has been covered."""
 
 PLANNER_PROMPT = """You write the final trip plan from the specialists' reports in the conversation.
-Use only facts from those reports and keep their source URLs. Check the total against the traveller's budget
-and say clearly if it is over. Where a report says data was unavailable, say so instead of filling the gap."""
+- Use only facts from those reports. Every URL in `sources` must appear in a report.
+- Include one day entry per calendar day from start_date to end_date.
+- Express estimated_total in the traveller's budget currency, using converted figures from the reports.
+  If prices were unavailable, set estimated_total to null and list what is missing in `gaps`.
+- Set over_budget honestly. Where a report says data was unavailable, add it to `gaps` instead of guessing."""
 
 
 def build_graph(
     model: BaseChatModel,
     *,
     router: Runnable | None = None,
+    planner: Runnable | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
     max_steps: int = 6,
     max_revisions: int = 3,
 ) -> CompiledStateGraph:
-    """Build the planner. `router` defaults to `model` with structured output; tests inject a scripted one."""
+    """Build the planner graph. `router` and `planner` default to `model` with structured output
+    (Route and TripPlan); tests inject scripted ones."""
     team = "\n".join(f"- {s.name}: {s.description}" for s in SPECIALISTS)
     router = router or model.with_structured_output(Route)
+    planner = planner or model.with_structured_output(TripPlan)
 
     def supervisor(state: TravelState) -> dict:
         steps = state.get("steps", 0)
@@ -76,12 +89,19 @@ def build_graph(
             # Specialists see the request and earlier reports, not each other's raw tool traffic.
             result = agent.invoke({"messages": state["messages"]})
             report = result["messages"][-1].content
-            return {"messages": [AIMessage(content=report, name=spec.name)]}
+            urls = [
+                url
+                for m in result["messages"]
+                if isinstance(m, ToolMessage)
+                for url in URL_RE.findall(str(m.content))
+            ]
+            return {"messages": [AIMessage(content=report, name=spec.name)], "evidence": urls}
 
         return run
 
-    def planner(state: TravelState) -> dict:
-        return {"messages": [model.invoke([SystemMessage(PLANNER_PROMPT), *state["messages"]])]}
+    def write_plan(state: TravelState) -> dict:
+        plan: TripPlan = planner.invoke([SystemMessage(PLANNER_PROMPT), *state["messages"]])
+        return {"plan": plan.model_dump(mode="json"), "messages": [AIMessage(content=plan.to_markdown(), name="planner")]}
 
     def review(state: TravelState) -> Command:
         revisions = state.get("revisions", 0)
@@ -106,7 +126,7 @@ def build_graph(
     for spec in SPECIALISTS:
         graph.add_node(spec.name, make_specialist_node(spec))
         graph.add_edge(spec.name, "supervisor")
-    graph.add_node("planner", planner)
+    graph.add_node("planner", write_plan)
     graph.add_node("review", review, destinations=("supervisor", END))
 
     graph.add_edge(START, "supervisor")
@@ -120,4 +140,11 @@ def build_graph(
 
 
 def plan_request(text: str) -> dict:
-    return {"messages": [HumanMessage(content=text)], "steps": 0, "revisions": 0, "approved": False}
+    return {
+        "messages": [HumanMessage(content=text)],
+        "steps": 0,
+        "revisions": 0,
+        "approved": False,
+        "plan": None,
+        "evidence": [],
+    }

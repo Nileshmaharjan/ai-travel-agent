@@ -38,3 +38,31 @@ def fake_settings(monkeypatch):
         monkeypatch.setattr(f"travel_agents.tools.{mod}.get_settings", lambda: settings)
     monkeypatch.setattr("travel_agents.tools._http.get_settings", lambda: settings)
     return settings
+
+
+def make_plan(destination: str = "Tokyo", **overrides: Any) -> "TripPlan":
+    from datetime import date
+
+    from travel_agents.plan import DayPlan, Money, TripPlan
+
+    fields = dict(
+        destination=destination,
+        start_date=date(2026, 11, 5),
+        end_date=date(2026, 11, 6),
+        days=[DayPlan(date=date(2026, 11, 5), title="Arrive", activities=["Shinjuku"]),
+              DayPlan(date=date(2026, 11, 6), title="Leave", activities=["Asakusa"])],
+        estimated_total=Money(amount=900, currency="USD"),
+        budget=Money(amount=1500, currency="USD"),
+        over_budget=False,
+        sources=["https://example.com/hotel"],
+        gaps=[],
+    )
+    fields.update(overrides)
+    return TripPlan(**fields)
+
+
+def scripted_planner(*destinations: str):
+    from langchain_core.runnables import RunnableLambda
+
+    queue = list(destinations)
+    return RunnableLambda(lambda _messages: make_plan(queue.pop(0)))
